@@ -27,14 +27,14 @@ set(NAM_DEPS_PATH "${NAM_CORE_PATH}/Dependencies")
 include_directories(SYSTEM "${NAM_DEPS_PATH}/eigen")
 include_directories("${NAM_DEPS_PATH}/nlohmann")  # for json.hpp
 include_directories("${NAM_CORE_PATH}")            # for <NAM/...> includes
-include_directories("${CMAKE_CURRENT_SOURCE_DIR}/include")  # for <namb/...> includes
+include_directories("${CMAKE_CURRENT_SOURCE_DIR}")           # for <namb/...> includes
 
 # NAM core sources
 file(GLOB_RECURSE NAM_SOURCES "${NAM_CORE_PATH}/NAM/*.cpp" "${NAM_CORE_PATH}/NAM/*.c")
 
 # NAMB loader source
 set(NAMB_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/include/namb/get_dsp_namb.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/namb/get_dsp_namb.cpp"
 )
 
 # --- nam2namb converter tool ---
