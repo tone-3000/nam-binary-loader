@@ -2,8 +2,6 @@
 
 A compact binary model format (`.namb`) for [Neural Amp Modeler](https://github.com/sdatkinson/NeuralAmpModelerCore) models.
 
-[Blog post on Tone3000 blog](https://www.tone3000.com/blog/running-nam-on-embedded-hardware)!
-
 ## Motivation
 
 NAM models are distributed as `.nam` files, which are JSON documents containing model configuration and weights encoded as arrays of floating-point numbers in text form. While JSON is convenient and human-readable, it has significant drawbacks in resource-constrained environments:
@@ -13,6 +11,8 @@ NAM models are distributed as `.nam` files, which are JSON documents containing 
 - **Load time**: Binary deserialization is essentially `memcpy` for weights, whereas JSON parsing must tokenize, validate, and convert each number from text.
 
 The `.namb` format addresses these issues by storing model configuration as fixed-layout binary structures and weights as raw IEEE 754 floats. The loader (`get_dsp_namb`) has no dependency on nlohmann/json, making it suitable for embedded targets where only the binary loader needs to be linked.
+
+We wrote more about what led us to develop this and other optimizations for embedded devices [here](https://www.tone3000.com/blog/running-nam-on-embedded-hardware).
 
 ## File format overview
 
