@@ -37,20 +37,22 @@ Supported architectures: Linear, ConvNet, LSTM, WaveNet (including recursive con
 ## Repository structure
 
 ```
-namb/                  # Library: format spec, reader/writer, loader
-  namb_format.h        #   Binary format constants, CRC32, BinaryReader/BinaryWriter
-  get_dsp_namb.h       #   Public API: get_dsp_namb()
-  get_dsp_namb.cpp     #   Binary loader implementation
+namb/                        # Library: format spec, reader/writer, loader
+  namb_format.h              #   Binary format constants, CRC32, BinaryReader/BinaryWriter
+  get_dsp_namb.h             #   Public API: get_dsp_namb()
+  get_dsp_namb.cpp           #   Binary loader implementation
+  binary_parser_registry.h   #   Architecture parser registry
 tools/
-  nam2namb.cpp         # CLI converter: .nam (JSON) -> .namb (binary)
-  loadmodel.cpp        # Model loader supporting both .nam and .namb
+  nam2namb.cpp               # CLI converter: .nam (JSON) -> .namb (binary)
+  loadmodel.cpp              # Model loader supporting both .nam and .namb
+  render_namb.cpp            # Offline renderer: process WAV through a .namb model
 test/
-  test_namb.cpp        # Tests: CRC32, format validation, round-trip, size reduction
+  test_namb.cpp              # Tests: CRC32, format validation, round-trip, size reduction
 ```
 
 ## Dependencies
 
-- [NeuralAmpModelerCore](https://github.com/sdatkinson/NeuralAmpModelerCore): at the moment, this project requires a modified version of NeuralAmpModelerCore that is available as this [pull request](https://github.com/sdatkinson/NeuralAmpModelerCore/pull/227)
+- [NeuralAmpModelerCore](https://github.com/sdatkinson/NeuralAmpModelerCore)
 - Eigen (transitive, via NeuralAmpModelerCore)
 - nlohmann/json (only for `nam2namb` converter tool, **not** for the loader)
 
@@ -85,6 +87,42 @@ auto model = nam::get_dsp_namb("model.namb");
 // From memory buffer (useful for embedded/QSPI flash)
 auto model = nam::get_dsp_namb(data_ptr, data_size);
 ```
+
+### Embedded integration (Daisy / STM32)
+
+On embedded targets, you typically store the `.namb` file in external flash (e.g. QSPI) and load it directly from memory. The memory-buffer overload of `get_dsp_namb` avoids any filesystem dependency:
+
+```cpp
+#include <namb/get_dsp_namb.h>
+
+// Model stored in QSPI flash at a known address
+extern const uint8_t namb_data[];
+extern const size_t  namb_size;
+
+auto model = nam::get_dsp_namb(namb_data, namb_size);
+model->prewarm();
+```
+
+The loader (`get_dsp_namb.cpp`) and its headers are self-contained — they do **not** depend on nlohmann/json. The only external dependencies are NeuralAmpModelerCore (for `create_dsp` and the DSP model classes) and Eigen (transitive, via NeuralAmpModelerCore).
+
+To add the loader to a Daisy project, include these source/header files in your build:
+
+```
+namb/get_dsp_namb.h              # Public API
+namb/get_dsp_namb.cpp            # Loader implementation
+namb/namb_format.h               # Format constants, CRC32, BinaryReader
+namb/binary_parser_registry.h    # Architecture parser registry
+```
+
+Plus the NeuralAmpModelerCore sources your target architecture requires (e.g. `NAM/lstm.cpp`, `NAM/wavenet.cpp`).
+
+### Rendering audio offline
+
+```bash
+./render_namb model.namb input.wav [output.wav]
+```
+
+Processes `input.wav` through the model and writes the result to `output.wav` (defaults to `output.wav` if omitted). Input sample rate must match the model's expected rate.
 
 ### Running tests
 

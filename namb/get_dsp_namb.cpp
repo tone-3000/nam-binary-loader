@@ -4,14 +4,17 @@
 #include <algorithm>
 #include <cstring>
 #include <fstream>
-#include <iostream>
-#include <sstream>
 #include <stdexcept>
 
 #include "get_dsp_namb.h"
 
 #include <NAM/activations.h>
+#include <NAM/convnet.h>
+#include <NAM/dsp.h>
+#include <NAM/lstm.h>
 #include <NAM/model_config.h>
+#include <NAM/wavenet.h>
+#include "binary_parser_registry.h"
 #include "namb_format.h"
 
 using namespace nam::namb;
@@ -148,89 +151,75 @@ nam::ModelMetadata to_model_metadata(const ParsedMetadata& pm)
 // Binary parsing into typed configs
 // =============================================================================
 
-struct LoadResult
-{
-  nam::ModelConfig config;
-  std::vector<float> weights;
-};
-
 // Forward declaration
-LoadResult load_model(BinaryReader& r, const float* weights, size_t weight_count, const nam::ModelMetadata& meta);
+std::unique_ptr<nam::ModelConfig> load_model(BinaryReader& r, const float*& weights, size_t& weight_count,
+                                             const nam::ModelMetadata& meta);
 
 // --- Linear ---
 
-LoadResult load_linear(BinaryReader& r, const float* weights, size_t weight_count)
+std::unique_ptr<nam::ModelConfig> load_linear(BinaryReader& r, const float*& /*weights*/, size_t& /*weight_count*/,
+                                              const nam::ModelMetadata&)
 {
-  nam::linear::LinearConfig cfg;
-  cfg.receptive_field = r.read_i32();
-  cfg.bias = r.read_u8() != 0;
-  cfg.in_channels = r.read_u8();
-  cfg.out_channels = r.read_u8();
+  auto cfg = std::make_unique<nam::linear::LinearConfig>();
+  cfg->receptive_field = r.read_i32();
+  cfg->bias = r.read_u8() != 0;
+  cfg->in_channels = r.read_u8();
+  cfg->out_channels = r.read_u8();
   r.read_u8(); // reserved
-
-  LoadResult result;
-  result.config = std::move(cfg);
-  result.weights.assign(weights, weights + weight_count);
-  return result;
+  return cfg;
 }
 
 // --- LSTM ---
 
-LoadResult load_lstm(BinaryReader& r, const float* weights, size_t weight_count)
+std::unique_ptr<nam::ModelConfig> load_lstm(BinaryReader& r, const float*& /*weights*/, size_t& /*weight_count*/,
+                                            const nam::ModelMetadata&)
 {
-  nam::lstm::LSTMConfig cfg;
-  cfg.num_layers = r.read_u16();
-  cfg.input_size = r.read_u16();
-  cfg.hidden_size = r.read_u16();
-  cfg.in_channels = r.read_u8();
-  cfg.out_channels = r.read_u8();
+  auto cfg = std::make_unique<nam::lstm::LSTMConfig>();
+  cfg->num_layers = r.read_u16();
+  cfg->input_size = r.read_u16();
+  cfg->hidden_size = r.read_u16();
+  cfg->in_channels = r.read_u8();
+  cfg->out_channels = r.read_u8();
   r.skip(2); // reserved
-
-  LoadResult result;
-  result.config = std::move(cfg);
-  result.weights.assign(weights, weights + weight_count);
-  return result;
+  return cfg;
 }
 
 // --- ConvNet ---
 
-LoadResult load_convnet(BinaryReader& r, const float* weights, size_t weight_count)
+std::unique_ptr<nam::ModelConfig> load_convnet(BinaryReader& r, const float*& /*weights*/, size_t& /*weight_count*/,
+                                               const nam::ModelMetadata&)
 {
-  nam::convnet::ConvNetConfig cfg;
-  cfg.channels = r.read_u16();
-  cfg.batchnorm = r.read_u8() != 0;
+  auto cfg = std::make_unique<nam::convnet::ConvNetConfig>();
+  cfg->channels = r.read_u16();
+  cfg->batchnorm = r.read_u8() != 0;
   uint8_t num_dilations = r.read_u8();
-  cfg.groups = r.read_u16();
-  cfg.in_channels = r.read_u8();
-  cfg.out_channels = r.read_u8();
+  cfg->groups = r.read_u16();
+  cfg->in_channels = r.read_u8();
+  cfg->out_channels = r.read_u8();
 
-  cfg.activation = read_activation_config(r);
+  cfg->activation = read_activation_config(r);
 
-  cfg.dilations.reserve(num_dilations);
+  cfg->dilations.reserve(num_dilations);
   for (int i = 0; i < num_dilations; i++)
-    cfg.dilations.push_back(r.read_i32());
+    cfg->dilations.push_back(r.read_i32());
 
-  LoadResult result;
-  result.config = std::move(cfg);
-  result.weights.assign(weights, weights + weight_count);
-  return result;
+  return cfg;
 }
 
 // --- WaveNet ---
 
-LoadResult load_wavenet(BinaryReader& r, const float* weights, size_t weight_count, const nam::ModelMetadata& meta)
+std::unique_ptr<nam::ModelConfig> load_wavenet(BinaryReader& r, const float*& weights, size_t& weight_count,
+                                               const nam::ModelMetadata& meta)
 {
-  nam::wavenet::WaveNetConfig wc;
-  wc.in_channels = r.read_u8();
+  auto wc = std::make_unique<nam::wavenet::WaveNetConfig>();
+  wc->in_channels = r.read_u8();
   uint8_t has_head = r.read_u8();
   uint8_t num_layer_arrays = r.read_u8();
   uint8_t has_condition_dsp = r.read_u8();
 
-  wc.with_head = (has_head != 0);
+  wc->with_head = (has_head != 0);
 
   // Condition DSP
-  size_t cdsp_weights_consumed = 0;
-
   if (has_condition_dsp)
   {
     uint32_t cdsp_weight_count = r.read_u32();
@@ -240,9 +229,16 @@ LoadResult load_wavenet(BinaryReader& r, const float* weights, size_t weight_cou
     nam::ModelMetadata cdsp_meta = to_model_metadata(cdsp_pm);
 
     // Load condition DSP model recursively via create_dsp
-    LoadResult cdsp_result = load_model(r, weights, cdsp_weight_count, cdsp_meta);
-    wc.condition_dsp = nam::create_dsp(std::move(cdsp_result.config), std::move(cdsp_result.weights), cdsp_meta);
-    cdsp_weights_consumed = cdsp_weight_count;
+    // Use local copies so load_model doesn't advance the outer pointers
+    const float* cdsp_weights = weights;
+    size_t cdsp_wc = cdsp_weight_count;
+    auto cdsp_config = load_model(r, cdsp_weights, cdsp_wc, cdsp_meta);
+    std::vector<float> cdsp_weight_vec(weights, weights + cdsp_weight_count);
+    wc->condition_dsp = nam::create_dsp(std::move(cdsp_config), std::move(cdsp_weight_vec), cdsp_meta);
+
+    // Advance past condition DSP weights
+    weights += cdsp_weight_count;
+    weight_count -= cdsp_weight_count;
   }
 
   // Parse layer array params
@@ -316,7 +312,7 @@ LoadResult load_wavenet(BinaryReader& r, const float* weights, size_t weight_cou
     nam::wavenet::Layer1x1Params layer1x1_params(layer1x1_active, layer1x1_groups);
     nam::wavenet::Head1x1Params head1x1_params(head1x1_active, head1x1_out_channels, head1x1_groups);
 
-    wc.layer_array_params.emplace_back(input_size, condition_size, head_size, la_channels, bottleneck, kernel_size,
+    wc->layer_array_params.emplace_back(input_size, condition_size, head_size, la_channels, bottleneck, kernel_size,
                                        std::move(dilations), std::move(activation_configs), std::move(gating_modes),
                                        head_bias, groups_input, groups_input_mixin, layer1x1_params, head1x1_params,
                                        std::move(secondary_activation_configs), conv_pre_film, conv_post_film,
@@ -326,36 +322,32 @@ LoadResult load_wavenet(BinaryReader& r, const float* weights, size_t weight_cou
 
   // head_scale is the last weight value, but set_weights_ will overwrite it.
   // Pass 0.0f; set_weights_ will set the correct value from weights.
-  wc.head_scale = 0.0f;
+  wc->head_scale = 0.0f;
 
-  // Build wavenet weights (excluding condition DSP weights which were consumed earlier)
-  const float* wavenet_weights_ptr = weights + cdsp_weights_consumed;
-  size_t wavenet_weight_count = weight_count - cdsp_weights_consumed;
-
-  LoadResult result;
-  result.config = std::move(wc);
-  result.weights.assign(wavenet_weights_ptr, wavenet_weights_ptr + wavenet_weight_count);
-  return result;
+  return wc;
 }
 
 // =============================================================================
-// Dispatch to architecture-specific loader
+// Static registration of binary parsers
 // =============================================================================
 
-LoadResult load_model(BinaryReader& r, const float* weights, size_t weight_count, const nam::ModelMetadata& meta)
+static nam::namb::BinaryConfigParserHelper _register_linear(ARCH_LINEAR, load_linear);
+static nam::namb::BinaryConfigParserHelper _register_lstm(ARCH_LSTM, load_lstm);
+static nam::namb::BinaryConfigParserHelper _register_convnet(ARCH_CONVNET, load_convnet);
+static nam::namb::BinaryConfigParserHelper _register_wavenet(ARCH_WAVENET, load_wavenet);
+
+// =============================================================================
+// Dispatch to architecture-specific loader via registry
+// =============================================================================
+
+std::unique_ptr<nam::ModelConfig> load_model(BinaryReader& r, const float*& weights, size_t& weight_count,
+                                             const nam::ModelMetadata& meta)
 {
   uint8_t arch = r.read_u8();
   r.read_u8(); // reserved
-  r.read_u16(); // config_size (not needed - we parse sequentially)
+  r.read_u16(); // config_size
 
-  switch (arch)
-  {
-    case ARCH_LINEAR: return load_linear(r, weights, weight_count);
-    case ARCH_LSTM: return load_lstm(r, weights, weight_count);
-    case ARCH_CONVNET: return load_convnet(r, weights, weight_count);
-    case ARCH_WAVENET: return load_wavenet(r, weights, weight_count, meta);
-    default: throw std::runtime_error("NAMB: unknown architecture ID " + std::to_string(arch));
-  }
+  return BinaryConfigParserRegistry::instance().parse(arch, r, weights, weight_count, meta);
 }
 
 } // anonymous namespace
@@ -413,14 +405,17 @@ std::unique_ptr<nam::DSP> nam::get_dsp_namb(const uint8_t* data, size_t size)
 
   // Get weight data pointer
   const float* weights = reinterpret_cast<const float*>(data + weights_offset);
+  size_t weight_count = total_weight_count;
 
   // Read model block (at offset 80)
   size_t model_data_size = weights_offset - MODEL_BLOCK_OFFSET;
   BinaryReader model_reader(data + MODEL_BLOCK_OFFSET, model_data_size);
 
-  // Load model config and weights, then construct via unified path
-  LoadResult result = load_model(model_reader, weights, total_weight_count, meta);
-  return create_dsp(std::move(result.config), std::move(result.weights), meta);
+  // Load model config, then construct via unified path
+  auto config = load_model(model_reader, weights, weight_count, meta);
+  std::vector<float> weight_vec(weights, weights + weight_count);
+  auto dsp = create_dsp(std::move(config), std::move(weight_vec), meta);
+  return dsp;
 }
 
 std::unique_ptr<nam::DSP> nam::get_dsp_namb(const std::filesystem::path& filename)

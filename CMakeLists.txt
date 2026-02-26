@@ -43,6 +43,12 @@ add_executable(nam2namb tools/nam2namb.cpp ${NAM_SOURCES})
 # --- loadmodel tool (supports both .nam and .namb) ---
 add_executable(loadmodel tools/loadmodel.cpp ${NAM_SOURCES} ${NAMB_SOURCES})
 
+# --- render_namb tool (offline .namb renderer) ---
+set(AUDIO_DSP_TOOLS_DIR "${NAM_DEPS_PATH}/AudioDSPTools")
+set(AUDIO_DSP_TOOLS_WAV_SOURCES "${AUDIO_DSP_TOOLS_DIR}/dsp/wav.cpp")
+add_executable(render_namb tools/render_namb.cpp ${NAM_SOURCES} ${NAMB_SOURCES} ${AUDIO_DSP_TOOLS_WAV_SOURCES})
+target_include_directories(render_namb PRIVATE "${AUDIO_DSP_TOOLS_DIR}/dsp")
+
 # --- test runner ---
 add_executable(test_namb test/test_namb.cpp ${NAM_SOURCES} ${NAMB_SOURCES})
 # Ensure assertions are enabled
@@ -60,9 +66,11 @@ endif()
 
 target_compile_options(nam2namb PRIVATE ${WARN_FLAGS})
 target_compile_options(loadmodel PRIVATE ${WARN_FLAGS})
+target_compile_options(render_namb PRIVATE ${WARN_FLAGS})
 target_compile_options(test_namb PRIVATE ${WARN_FLAGS})
 
-# Suppress Eigen warnings in NAM sources
+# Suppress Eigen and AudioDSPTools warnings in NAM sources
 if (NOT MSVC)
   set_source_files_properties(${NAM_SOURCES} PROPERTIES COMPILE_FLAGS "-Wno-error")
+  set_source_files_properties(${AUDIO_DSP_TOOLS_WAV_SOURCES} PROPERTIES COMPILE_FLAGS "-Wno-error")
 endif()
