@@ -2,6 +2,8 @@
 
 A compact binary model format (`.namb`) for [Neural Amp Modeler](https://github.com/sdatkinson/NeuralAmpModelerCore) models.
 
+[Blog post on Tone3000 blog](https://www.tone3000.com/blog/running-nam-on-embedded-hardware)!
+
 ## Motivation
 
 NAM models are distributed as `.nam` files, which are JSON documents containing model configuration and weights encoded as arrays of floating-point numbers in text form. While JSON is convenient and human-readable, it has significant drawbacks in resource-constrained environments:
