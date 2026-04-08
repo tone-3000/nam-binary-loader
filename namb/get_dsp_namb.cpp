@@ -249,7 +249,7 @@ std::unique_ptr<nam::ModelConfig> load_wavenet(BinaryReader& r, const float*& we
     uint16_t head_size = r.read_u16();
     uint16_t la_channels = r.read_u16();
     uint16_t bottleneck = r.read_u16();
-    uint16_t kernel_size = r.read_u16();
+    r.read_u16(); // reserved (was kernel_size, now stored per-dilation after dilations)
 
     bool head_bias = r.read_u8() != 0;
     uint8_t num_dilations = r.read_u8();
@@ -283,6 +283,12 @@ std::unique_ptr<nam::ModelConfig> load_wavenet(BinaryReader& r, const float*& we
     for (int i = 0; i < num_dilations; i++)
       dilations.push_back(r.read_i32());
 
+    // Kernel sizes [N * uint16]
+    std::vector<int> kernel_sizes;
+    kernel_sizes.reserve(num_dilations);
+    for (int i = 0; i < num_dilations; i++)
+      kernel_sizes.push_back(r.read_u16());
+
     // Activation configs [N * variable]
     std::vector<nam::activations::ActivationConfig> activation_configs;
     activation_configs.reserve(num_dilations);
@@ -312,8 +318,9 @@ std::unique_ptr<nam::ModelConfig> load_wavenet(BinaryReader& r, const float*& we
     nam::wavenet::Layer1x1Params layer1x1_params(layer1x1_active, layer1x1_groups);
     nam::wavenet::Head1x1Params head1x1_params(head1x1_active, head1x1_out_channels, head1x1_groups);
 
-    wc->layer_array_params.emplace_back(input_size, condition_size, head_size, la_channels, bottleneck, kernel_size,
-                                       std::move(dilations), std::move(activation_configs), std::move(gating_modes),
+    wc->layer_array_params.emplace_back(input_size, condition_size, head_size, la_channels, bottleneck,
+                                       std::move(kernel_sizes), std::move(dilations), std::move(activation_configs),
+                                       std::move(gating_modes),
                                        head_bias, groups_input, groups_input_mixin, layer1x1_params, head1x1_params,
                                        std::move(secondary_activation_configs), conv_pre_film, conv_post_film,
                                        input_mixin_pre_film, input_mixin_post_film, activation_pre_film,

@@ -269,6 +269,10 @@ static void write_wavenet_config(BinaryWriter& w, const json& model_json)
   size_t num_layer_arrays = config["layers"].size();
   bool has_condition_dsp = config.find("condition_dsp") != config.end();
 
+  if (with_head)
+    std::cerr << "Warning: model has a 'head' config which is not yet implemented in NeuralAmpModelerCore; "
+                 "the model will convert but will fail to load at runtime." << std::endl;
+
   w.write_u8(static_cast<uint8_t>(in_channels));
   w.write_u8(with_head ? 1 : 0);
   w.write_u8(static_cast<uint8_t>(num_layer_arrays));
@@ -301,12 +305,30 @@ static void write_wavenet_config(BinaryWriter& w, const json& model_json)
     const auto& dilations = layer["dilations"];
     size_t num_dilations = dilations.size();
 
+    // Parse kernel sizes - support legacy single kernel_size or new per-layer kernel_sizes
+    std::vector<int> kernel_sizes;
+    if (layer.find("kernel_sizes") != layer.end() && layer["kernel_sizes"].is_array())
+    {
+      for (const auto& ks : layer["kernel_sizes"])
+        kernel_sizes.push_back(ks.get<int>());
+    }
+    else if (layer.find("kernel_size") != layer.end())
+    {
+      kernel_sizes.resize(num_dilations, layer["kernel_size"].get<int>());
+    }
+    else
+    {
+      throw std::runtime_error("Layer array missing kernel_size or kernel_sizes");
+    }
+    if (kernel_sizes.size() != num_dilations)
+      throw std::runtime_error("kernel_sizes length does not match dilations length");
+
     w.write_u16(static_cast<uint16_t>(layer["input_size"].get<int>()));
     w.write_u16(static_cast<uint16_t>(layer["condition_size"].get<int>()));
     w.write_u16(static_cast<uint16_t>(layer["head_size"].get<int>()));
     w.write_u16(static_cast<uint16_t>(layer_channels));
     w.write_u16(static_cast<uint16_t>(bottleneck));
-    w.write_u16(static_cast<uint16_t>(layer["kernel_size"].get<int>()));
+    w.write_u16(0); // reserved (was kernel_size, now stored per-dilation after dilations)
 
     w.write_u8(layer["head_bias"].get<bool>() ? 1 : 0);
     w.write_u8(static_cast<uint8_t>(num_dilations));
@@ -356,6 +378,10 @@ static void write_wavenet_config(BinaryWriter& w, const json& model_json)
     // Dilations [num_dilations * int32]
     for (const auto& d : dilations)
       w.write_i32(d.get<int>());
+
+    // Kernel sizes [num_dilations * uint16]
+    for (int ks : kernel_sizes)
+      w.write_u16(static_cast<uint16_t>(ks));
 
     // Activation configs [num_dilations * variable]
     if (layer["activation"].is_array())
