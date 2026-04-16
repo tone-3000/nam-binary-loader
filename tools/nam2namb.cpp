@@ -1,11 +1,14 @@
 // nam2namb: Convert .nam (JSON) models to .namb (compact binary) format
 //
-// Usage: nam2namb input.nam [output.namb]
+// Usage: nam2namb [--slim <factor>] input.nam [output.namb]
 // If output is not specified, replaces .nam extension with .namb
+// --slim <factor>: required when input is a SlimmableContainer; selects
+//   the submodel whose max_value threshold covers the given factor [0.0, 1.0]
 
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -323,14 +326,36 @@ static void write_wavenet_config(BinaryWriter& w, const json& model_json)
     if (kernel_sizes.size() != num_dilations)
       throw std::runtime_error("kernel_sizes length does not match dilations length");
 
+    // Parse head params from either new "head" object or legacy "head_size"/"head_bias" fields
+    // Mirrors wavenet.cpp logic
+    int head_size = 0;
+    int head_kernel_size = 1;
+    bool head_bias = false;
+    if (layer.find("head") != layer.end() && !layer["head"].is_null())
+    {
+      const auto& head_json = layer["head"];
+      head_size = head_json.at("out_channels").get<int>();
+      head_kernel_size = head_json.at("kernel_size").get<int>();
+      head_bias = head_json.at("bias").get<bool>();
+    }
+    else if (layer.find("head_size") != layer.end())
+    {
+      head_size = layer["head_size"].get<int>();
+      head_bias = layer.at("head_bias").get<bool>();
+    }
+    else
+    {
+      throw std::runtime_error("Layer array missing 'head' or 'head_size'/'head_bias'");
+    }
+
     w.write_u16(static_cast<uint16_t>(layer["input_size"].get<int>()));
     w.write_u16(static_cast<uint16_t>(layer["condition_size"].get<int>()));
-    w.write_u16(static_cast<uint16_t>(layer["head_size"].get<int>()));
+    w.write_u16(static_cast<uint16_t>(head_size));
     w.write_u16(static_cast<uint16_t>(layer_channels));
     w.write_u16(static_cast<uint16_t>(bottleneck));
-    w.write_u16(0); // reserved (was kernel_size, now stored per-dilation after dilations)
+    w.write_u16(static_cast<uint16_t>(head_kernel_size)); // was reserved; now stores head_kernel_size
 
-    w.write_u8(layer["head_bias"].get<bool>() ? 1 : 0);
+    w.write_u8(head_bias ? 1 : 0);
     w.write_u8(static_cast<uint8_t>(num_dilations));
 
     int groups_input = layer.value("groups_input", 1);
@@ -581,23 +606,100 @@ static std::vector<uint8_t> convert_nam_to_namb(const json& model_json)
 }
 
 // =============================================================================
+// SlimmableContainer submodel selection
+// =============================================================================
+
+// Mirrors ContainerModel::SetSlimmableSize: selects the first submodel whose
+// max_value > slim_factor, or the last if slim_factor reaches the end.
+// Promotes top-level version/metadata/sample_rate into the extracted submodel.
+static json resolve_slimmable_container(const json& model_json, double slim_factor)
+{
+  const json& submodels = model_json["config"]["submodels"];
+  if (!submodels.is_array() || submodels.empty())
+    throw std::runtime_error("SlimmableContainer: 'submodels' must be a non-empty array");
+
+  size_t active_index = submodels.size() - 1;
+  for (size_t i = 0; i < submodels.size(); ++i)
+  {
+    if (slim_factor < submodels[i]["max_value"].get<double>())
+    {
+      active_index = i;
+      break;
+    }
+  }
+
+  json selected = submodels[active_index]["model"];
+
+  // Propagate top-level fields the submodel spec omits
+  for (const char* key : {"version", "metadata", "sample_rate"})
+  {
+    if (model_json.find(key) != model_json.end() && selected.find(key) == selected.end())
+      selected[key] = model_json[key];
+  }
+
+  std::cerr << "SlimmableContainer: slim=" << slim_factor
+            << " -> submodel[" << active_index << "]"
+            << " (max_value=" << submodels[active_index]["max_value"].get<double>() << ")"
+            << std::endl;
+
+  return selected;
+}
+
+// =============================================================================
 // Entry point
 // =============================================================================
 
 int main(int argc, char* argv[])
 {
-  if (argc < 2)
+  // Parse arguments: collect positional args and --slim flag
+  double slim_factor = 0.0;
+  bool has_slim = false;
+  std::vector<std::string> positional_args;
+
+  for (int i = 1; i < argc; ++i)
   {
-    std::cerr << "Usage: nam2namb input.nam [output.namb]" << std::endl;
+    std::string arg(argv[i]);
+    if (arg == "--slim")
+    {
+      if (i + 1 >= argc)
+      {
+        std::cerr << "Error: --slim requires a value" << std::endl;
+        return 1;
+      }
+      try
+      {
+        slim_factor = std::stod(argv[++i]);
+      }
+      catch (...)
+      {
+        std::cerr << "Error: --slim value must be a number" << std::endl;
+        return 1;
+      }
+      if (slim_factor < 0.0 || slim_factor > 1.0)
+      {
+        std::cerr << "Error: --slim value must be between 0.0 and 1.0" << std::endl;
+        return 1;
+      }
+      has_slim = true;
+    }
+    else
+    {
+      positional_args.push_back(arg);
+    }
+  }
+
+  if (positional_args.empty())
+  {
+    std::cerr << "Usage: nam2namb [--slim <factor>] input.nam [output.namb]" << std::endl;
     return 1;
   }
 
-  std::filesystem::path input_path(argv[1]);
+  std::filesystem::path input_path(positional_args[0]);
   std::filesystem::path output_path;
 
-  if (argc >= 3)
+  if (positional_args.size() >= 2)
   {
-    output_path = argv[2];
+    output_path = positional_args[1];
   }
   else
   {
@@ -624,6 +726,31 @@ int main(int argc, char* argv[])
     return 1;
   }
   input_file.close();
+
+  // Resolve SlimmableContainer before conversion
+  std::string arch = model_json["architecture"].get<std::string>();
+  if (arch == "SlimmableContainer")
+  {
+    if (!has_slim)
+    {
+      std::cerr << "Error: input is a SlimmableContainer; use --slim <factor> to select a submodel"
+                << std::endl;
+      return 1;
+    }
+    try
+    {
+      model_json = resolve_slimmable_container(model_json, slim_factor);
+    }
+    catch (const std::exception& e)
+    {
+      std::cerr << "Error resolving SlimmableContainer: " << e.what() << std::endl;
+      return 1;
+    }
+  }
+  else if (has_slim)
+  {
+    std::cerr << "Warning: --slim ignored for architecture '" << arch << "'" << std::endl;
+  }
 
   // Convert
   std::vector<uint8_t> namb_data;

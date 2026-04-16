@@ -249,7 +249,8 @@ std::unique_ptr<nam::ModelConfig> load_wavenet(BinaryReader& r, const float*& we
     uint16_t head_size = r.read_u16();
     uint16_t la_channels = r.read_u16();
     uint16_t bottleneck = r.read_u16();
-    r.read_u16(); // reserved (was kernel_size, now stored per-dilation after dilations)
+    uint16_t head_kernel_size_raw = r.read_u16(); // was reserved; stores head_kernel_size
+    int head_kernel_size = (head_kernel_size_raw == 0) ? 1 : static_cast<int>(head_kernel_size_raw);
 
     bool head_bias = r.read_u8() != 0;
     uint8_t num_dilations = r.read_u8();
@@ -318,13 +319,16 @@ std::unique_ptr<nam::ModelConfig> load_wavenet(BinaryReader& r, const float*& we
     nam::wavenet::Layer1x1Params layer1x1_params(layer1x1_active, layer1x1_groups);
     nam::wavenet::Head1x1Params head1x1_params(head1x1_active, head1x1_out_channels, head1x1_groups);
 
-    wc->layer_array_params.emplace_back(input_size, condition_size, head_size, la_channels, bottleneck,
-                                       std::move(kernel_sizes), std::move(dilations), std::move(activation_configs),
-                                       std::move(gating_modes),
-                                       head_bias, groups_input, groups_input_mixin, layer1x1_params, head1x1_params,
-                                       std::move(secondary_activation_configs), conv_pre_film, conv_post_film,
-                                       input_mixin_pre_film, input_mixin_post_film, activation_pre_film,
-                                       activation_post_film, layer1x1_post_film, head1x1_post_film);
+    wc->layer_array_params.emplace_back(
+      static_cast<int>(input_size), static_cast<int>(condition_size), static_cast<int>(head_size),
+      head_kernel_size, static_cast<int>(la_channels), static_cast<int>(bottleneck),
+      std::move(kernel_sizes), std::move(dilations), std::move(activation_configs),
+      std::move(gating_modes),
+      head_bias, static_cast<int>(groups_input), static_cast<int>(groups_input_mixin),
+      layer1x1_params, head1x1_params,
+      std::move(secondary_activation_configs), conv_pre_film, conv_post_film,
+      input_mixin_pre_film, input_mixin_post_film, activation_pre_film,
+      activation_post_film, layer1x1_post_film, head1x1_post_film);
   }
 
   // head_scale is the last weight value, but set_weights_ will overwrite it.
